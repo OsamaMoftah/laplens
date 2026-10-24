@@ -1,0 +1,13 @@
+node_modules/
+.next/
+/public/ort/
+out/
+dist/
+.env*
+!.env.example
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.vercel/
+coverage/
+.turbo/
