@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   webpack(config, { isServer }) {
     if (!isServer) {
       config.module.rules.push({
-        test: /onnxruntime-web[\/]dist[\/].*\.mjs$/,
+        test: /onnxruntime-web[\\/]dist[\\/].*\.mjs$/,
         use: [{ loader: "./scripts/browser-runtime.cjs" }],
       });
       config.resolve.fallback = {

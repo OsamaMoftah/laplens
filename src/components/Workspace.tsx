@@ -408,8 +408,21 @@ export function Workspace() {
       setError("Choose a PNG, JPEG, or WebP logo image.");
       return;
     }
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(file.type) ||
+      file.size > 5 * 1024 * 1024
+    ) {
+      setError("Choose a PNG, JPEG, or WebP logo under 5 MB.");
+      return;
+    }
     try {
       const image = await createImageBitmap(file);
+      if (image.width * image.height > 16_000_000) {
+        image.close();
+        throw new Error(
+          "Logo image exceeds 16 million pixels. Resize it first.",
+        );
+      }
       if (image.width < 20 || image.height < 12) {
         image.close();
         setError("Choose a sharper logo image at least 20 × 12 pixels.");
@@ -484,8 +497,15 @@ export function Workspace() {
     try {
       if (!analyzerRef.current) analyzerRef.current = new LocalRaceAnalyzer();
       const analyzer = analyzerRef.current;
-      if (reference && referencePixels.current)
-        await analyzer.addReference(reference, referencePixels.current);
+      abort.signal.addEventListener(
+        "abort",
+        () =>
+          analyzer.dispose(
+            new DOMException("Analysis cancelled.", "AbortError"),
+          ),
+        { once: true },
+      );
+      await analyzer.setReference(reference, referencePixels.current);
       const analysis = await analyzer.analyze(
         video,
         reference ? [reference] : [],
@@ -506,6 +526,8 @@ export function Workspace() {
         }
       }
     } catch (cause) {
+      analyzerRef.current?.dispose();
+      analyzerRef.current = null;
       if (cause instanceof DOMException && cause.name === "AbortError")
         setNotice("Run cancelled. Your clip is ready to analyze again.");
       else
@@ -1320,7 +1342,7 @@ export function Workspace() {
                     <strong>{logoSamples}</strong>
                     <span>
                       {logoSamples
-                        ? `matched frames across ${result.exposures.length} exposure windows`
+                        ? `observed matches across ${result.exposures.length} exposure windows`
                         : "No qualifying visual matches. Try a sharper reference or closer footage."}
                     </span>
                   </div>
@@ -1345,7 +1367,7 @@ export function Workspace() {
                           {formatPreciseTime(exposure.end)}
                         </span>
                         <span>
-                          {exposure.observations} frames
+                          {exposure.observations} matches
                           <ChevronRight size={14} />
                         </span>
                       </button>

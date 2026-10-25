@@ -18,9 +18,14 @@ export class LocalRaceAnalyzer {
   private nextId = 1;
   private pending = new Map<
     number,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
   >();
   private ready: Promise<void>;
+  private failure?: Error;
 
   constructor() {
     this.worker = new Worker(new URL("./vision.worker.ts", import.meta.url), {
@@ -30,13 +35,25 @@ export class LocalRaceAnalyzer {
       const task = this.pending.get(data.id);
       if (!task) return;
       this.pending.delete(data.id);
+      clearTimeout(task.timer);
       if (data.error) task.reject(new Error(data.error));
       else task.resolve(data.result ?? data.ok);
     };
+    this.worker.onerror = (event) => {
+      event.preventDefault();
+      this.dispose(new Error("Analysis worker failed. Please retry the run."));
+    };
+    this.worker.onmessageerror = () =>
+      this.dispose(
+        new Error(
+          "Analysis worker returned an unreadable message. Please retry.",
+        ),
+      );
     this.ready = this.request("load").then((value) => {
       this.provider =
         (value as { provider?: string } | undefined)?.provider ?? "WASM";
     });
+    void this.ready.catch(() => {});
   }
 
   private request(
@@ -44,19 +61,40 @@ export class LocalRaceAnalyzer {
     payload: Record<string, unknown> = {},
     transfer: Transferable[] = [],
   ) {
+    if (this.failure) return Promise.reject(this.failure);
     const id = this.nextId++;
-    const response = new Promise<unknown>((resolve, reject) =>
-      this.pending.set(id, { resolve, reject }),
-    );
-    this.worker.postMessage({ id, type, ...payload }, transfer);
+    const response = new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(
+        () =>
+          this.dispose(
+            new Error(
+              "Analysis worker timed out. Please retry with a shorter clip.",
+            ),
+          ),
+        120_000,
+      );
+      this.pending.set(id, { resolve, reject, timer });
+    });
+    try {
+      this.worker.postMessage({ id, type, ...payload }, transfer);
+    } catch {
+      this.dispose(new Error("Analysis worker could not receive the frame."));
+    }
     return response;
   }
 
-  async addReference(reference: SponsorReference, pixels: ImageData) {
+  async setReference(
+    reference: SponsorReference | null,
+    pixels: ImageData | null,
+  ) {
     await this.ready;
+    if (!reference || !pixels) {
+      await this.request("set-reference", { reference: null });
+      return;
+    }
     const bytes = pixels.data.buffer.slice(0);
     await this.request(
-      "add-reference",
+      "set-reference",
       {
         reference: {
           id: reference.id,
@@ -77,6 +115,8 @@ export class LocalRaceAnalyzer {
     progress: (current: number, total: number, stage: string) => void,
   ): Promise<RunResult> {
     await this.ready;
+    if (signal.aborted)
+      throw new DOMException("Analysis cancelled.", "AbortError");
     const { videoWidth: width, videoHeight: height, duration } = video;
     if (!width || !height || !Number.isFinite(duration))
       throw new Error("The video could not be decoded.");
@@ -84,6 +124,10 @@ export class LocalRaceAnalyzer {
       throw new Error("For this browser demo, choose a clip up to 30 seconds.");
     if (duration < 1)
       throw new Error("Choose a clip at least one second long.");
+    if (width > 3840 || height > 3840 || width * height > 8_294_400)
+      throw new Error(
+        "Video resolution exceeds the 4K / 8.3 million pixels limit. Resize the clip first.",
+      );
     // Sample short clips more densely so measured boxes stay closer to fast-moving cars.
     // Longer clips use one sample per second to keep browser-side inference bounded.
     const hz = duration <= 12 ? 3 : 1;
@@ -161,9 +205,12 @@ export class LocalRaceAnalyzer {
     };
   }
 
-  dispose() {
-    for (const { reject } of this.pending.values())
-      reject(new Error("Analysis worker closed."));
+  dispose(error: Error = new Error("Analysis worker closed.")) {
+    this.failure = error;
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(error);
+    }
     this.pending.clear();
     this.worker.terminate();
   }

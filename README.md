@@ -17,8 +17,8 @@ Review racing footage with car detection, sponsor-reference matching, and calibr
 
 ## Use
 
-1. Load the sample or choose a browser-supported MP4 or WebM: 1–30 seconds, up to 250 MB.
-2. Optionally add a clear, tightly cropped sponsor logo.
+1. Load the sample or choose a browser-supported MP4 or WebM: 1–30 seconds, up to 250 MB and 4K resolution (8.3 million pixels).
+2. Optionally add a clear, tightly cropped PNG, JPEG, or WebP sponsor logo (up to 5 MB and 16 million pixels).
 3. Analyze the clip, inspect observations on the timeline, and export the run as JSON.
 4. For section speed, use a stationary-camera shot, enter the measured distance between two gates, and place the gates across the track.
 
@@ -74,3 +74,7 @@ Use a Static Space. Other static hosts must support video byte ranges and serve 
 ## License
 
 Application code is MIT licensed. Models, libraries, fonts, and footage retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The sample is an adapted excerpt of Sarah Stierch's CC BY 4.0 raceway video; retain its attribution when redistributing it.
+
+## Security
+
+The demo has no accounts, upload API, or server-side inference. Reports include the selected filenames, so review them before sharing. See [SECURITY.md](SECURITY.md) for test scope and remaining limits.

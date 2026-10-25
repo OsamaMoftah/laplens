@@ -1410,6 +1410,7 @@ h3 {
   background: var(--color-overlay-outline);
 }
 .pitwall .video-panel[data-expanded="true"] {
+  --color-focus: var(--color-yellow);
   display: flex;
   flex-direction: column;
   padding: var(--space-md);

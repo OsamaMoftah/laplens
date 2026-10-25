@@ -18,7 +18,7 @@ type ActiveTrack = CarObservation & {
 let tracks: ActiveTrack[] = [];
 type FrameMessage = {
   id: number;
-  type: "load" | "add-reference" | "analyze-frame";
+  type: "load" | "set-reference" | "analyze-frame";
   [key: string]: unknown;
 };
 type RgbFrame = { width: number; height: number; pixels: ArrayBuffer };
@@ -106,13 +106,14 @@ function computeFeatures(image: InstanceType<typeof cv.Mat>) {
   const gray = new cv.Mat();
   const keypoints = new cv.KeyPointVector();
   const descriptors = new cv.Mat();
+  const mask = new cv.Mat();
   const orb = new cv.ORB(650, 1.2, 7, 19, 0, 2, cv.ORB_HARRIS_SCORE, 31, 12);
   try {
     if (image.channels() === 4) cv.cvtColor(image, gray, cv.COLOR_RGBA2GRAY);
     else if (image.channels() === 3)
       cv.cvtColor(image, gray, cv.COLOR_RGB2GRAY);
     else image.copyTo(gray);
-    orb.detectAndCompute(gray, new cv.Mat(), keypoints, descriptors);
+    orb.detectAndCompute(gray, mask, keypoints, descriptors);
     const points: Array<[number, number]> = [];
     for (let i = 0; i < keypoints.size(); i++) {
       const point = keypoints.get(i).pt;
@@ -124,6 +125,7 @@ function computeFeatures(image: InstanceType<typeof cv.Mat>) {
       cols: descriptors.cols,
     };
   } finally {
+    mask.delete();
     gray.delete();
     keypoints.delete();
     descriptors.delete();
@@ -633,7 +635,12 @@ scope.onmessage = async ({ data }: MessageEvent<FrameMessage>) => {
       return;
     }
     if (!session) throw new Error("The vision engine is not ready.");
-    if (type === "add-reference") {
+    if (type === "set-reference") {
+      references.clear();
+      if (!data.reference) {
+        scope.postMessage({ id, result: true });
+        return;
+      }
       await loadOpenCv();
       const reference = data.reference as {
         id: string;
