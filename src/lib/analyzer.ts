@@ -1,16 +1,31 @@
-import type { ExposureInterval, RunResult, SampleFrame, SponsorReference } from "./types";
+import type {
+  ExposureInterval,
+  RunResult,
+  SampleFrame,
+  SponsorReference,
+} from "./types";
 
-type WorkerReply = { id: number; ok?: boolean; result?: unknown; error?: string };
+type WorkerReply = {
+  id: number;
+  ok?: boolean;
+  result?: unknown;
+  error?: string;
+};
 
 export class LocalRaceAnalyzer {
   private worker: Worker;
   private provider = "WASM";
   private nextId = 1;
-  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
   private ready: Promise<void>;
 
   constructor() {
-    this.worker = new Worker(new URL("./vision.worker.ts", import.meta.url), { type: "module" });
+    this.worker = new Worker(new URL("./vision.worker.ts", import.meta.url), {
+      type: "module",
+    });
     this.worker.onmessage = ({ data }: MessageEvent<WorkerReply>) => {
       const task = this.pending.get(data.id);
       if (!task) return;
@@ -18,14 +33,21 @@ export class LocalRaceAnalyzer {
       if (data.error) task.reject(new Error(data.error));
       else task.resolve(data.result ?? data.ok);
     };
-    this.ready = this.request("load").then(value => {
-      this.provider = (value as { provider?: string } | undefined)?.provider ?? "WASM";
+    this.ready = this.request("load").then((value) => {
+      this.provider =
+        (value as { provider?: string } | undefined)?.provider ?? "WASM";
     });
   }
 
-  private request(type: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []) {
+  private request(
+    type: string,
+    payload: Record<string, unknown> = {},
+    transfer: Transferable[] = [],
+  ) {
     const id = this.nextId++;
-    const response = new Promise<unknown>((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    const response = new Promise<unknown>((resolve, reject) =>
+      this.pending.set(id, { resolve, reject }),
+    );
     this.worker.postMessage({ id, type, ...payload }, transfer);
     return response;
   }
@@ -33,9 +55,19 @@ export class LocalRaceAnalyzer {
   async addReference(reference: SponsorReference, pixels: ImageData) {
     await this.ready;
     const bytes = pixels.data.buffer.slice(0);
-    await this.request("add-reference", {
-      reference: { id: reference.id, name: reference.name, width: pixels.width, height: pixels.height, pixels: bytes },
-    }, [bytes]);
+    await this.request(
+      "add-reference",
+      {
+        reference: {
+          id: reference.id,
+          name: reference.name,
+          width: pixels.width,
+          height: pixels.height,
+          pixels: bytes,
+        },
+      },
+      [bytes],
+    );
   }
 
   async analyze(
@@ -46,9 +78,12 @@ export class LocalRaceAnalyzer {
   ): Promise<RunResult> {
     await this.ready;
     const { videoWidth: width, videoHeight: height, duration } = video;
-    if (!width || !height || !Number.isFinite(duration)) throw new Error("The video could not be decoded.");
-    if (duration > 30) throw new Error("For this browser demo, choose a clip up to 30 seconds.");
-    if (duration < 1) throw new Error("Choose a clip at least one second long.");
+    if (!width || !height || !Number.isFinite(duration))
+      throw new Error("The video could not be decoded.");
+    if (duration > 30)
+      throw new Error("For this browser demo, choose a clip up to 30 seconds.");
+    if (duration < 1)
+      throw new Error("Choose a clip at least one second long.");
     // Sample short clips more densely so measured boxes stay closer to fast-moving cars.
     // Longer clips use one sample per second to keep browser-side inference bounded.
     const hz = duration <= 12 ? 3 : 1;
@@ -63,13 +98,18 @@ export class LocalRaceAnalyzer {
     let previousTime = -1;
     try {
       for (let index = 0; index < total; index++) {
-        if (signal.aborted) throw new DOMException("Analysis cancelled.", "AbortError");
+        if (signal.aborted)
+          throw new DOMException("Analysis cancelled.", "AbortError");
         const time = Math.min(duration - 0.01, index / hz);
         if (Math.abs(video.currentTime - time) > 0.001) {
           await new Promise<void>((resolve, reject) => {
-            const timeout = window.setTimeout(() => done(new Error("Video seek timed out.")), 10_000);
+            const timeout = window.setTimeout(
+              () => done(new Error("Video seek timed out.")),
+              10_000,
+            );
             const onSeek = () => done();
-            const onAbort = () => done(new DOMException("Analysis cancelled.", "AbortError"));
+            const onAbort = () =>
+              done(new DOMException("Analysis cancelled.", "AbortError"));
             const done = (error?: Error) => {
               window.clearTimeout(timeout);
               video.removeEventListener("seeked", onSeek);
@@ -85,16 +125,26 @@ export class LocalRaceAnalyzer {
         context.drawImage(video, 0, 0, width, height);
         const image = context.getImageData(0, 0, width, height);
         const bytes = image.data.buffer;
-        const observation = await this.request("analyze-frame", {
-          time,
-          width,
-          height,
-          pixels: bytes,
-          resetTracks: previousTime < 0 || time - previousTime > 1.25,
-        }, [bytes]) as { cars: SampleFrame["cars"]; logos: SampleFrame["logos"] };
+        const observation = (await this.request(
+          "analyze-frame",
+          {
+            time,
+            width,
+            height,
+            pixels: bytes,
+            resetTracks: previousTime < 0 || time - previousTime > 1.25,
+          },
+          [bytes],
+        )) as { cars: SampleFrame["cars"]; logos: SampleFrame["logos"] };
         frames.push({ time, ...observation });
         previousTime = time;
-        progress(index + 1, total, observation.logos.length ? "Matching sponsor marks" : "Finding and following cars");
+        progress(
+          index + 1,
+          total,
+          observation.logos.length
+            ? "Matching sponsor marks"
+            : "Finding and following cars",
+        );
       }
     } finally {
       video.pause();
@@ -112,7 +162,8 @@ export class LocalRaceAnalyzer {
   }
 
   dispose() {
-    for (const { reject } of this.pending.values()) reject(new Error("Analysis worker closed."));
+    for (const { reject } of this.pending.values())
+      reject(new Error("Analysis worker closed."));
     this.pending.clear();
     this.worker.terminate();
   }
@@ -129,10 +180,18 @@ function buildExposureIntervals(frames: SampleFrame[], hz: number) {
   }
   const intervals: ExposureInterval[] = [];
   for (const [sponsorId, points] of evidence) {
-    let start = points[0].time, end = start;
+    let start = points[0].time,
+      end = start;
     let tracks = new Set([points[0].trackId]);
     let observations = 1;
-    const flush = () => intervals.push({ sponsorId, start, end, observations, carTrackIds: [...tracks] });
+    const flush = () =>
+      intervals.push({
+        sponsorId,
+        start,
+        end,
+        observations,
+        carTrackIds: [...tracks],
+      });
     for (const point of points.slice(1)) {
       if (point.time - end <= 1.5 / hz) {
         end = point.time;

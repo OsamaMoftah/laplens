@@ -1,13 +1,10 @@
-Football strategist browser detector assets
+RF-DETR Nano model assets
 
-Model
-- Name: RF-DETR Nano, COCO, int8 ONNX export
-- Source: https://huggingface.co/onnx-community/rfdetr_nano-ONNX
-- Model repository revision: eae21cee0687a91bcf9fa071605c48d7705d2d91
-- License: Apache License 2.0; see LICENSE.txt in this directory
-- ONNX file SHA-256: 2981aa0a57781c0f1a5be171c3fded504c38fe8611326bc5e3d0f8a2e9a57085
+Model: onnx-community/rfdetr_nano-ONNX, based on Roboflow RF-DETR
+Source: https://huggingface.co/onnx-community/rfdetr_nano-ONNX
+Revision: eae21cee0687a91bcf9fa071605c48d7705d2d91
+File: model_quantized.onnx
+SHA-256: 2981aa0a57781c0f1a5be171c3fded504c38fe8611326bc5e3d0f8a2e9a57085
+License: Apache License 2.0; see LICENSE.txt.
 
-Inference runtime
-- Package: onnxruntime-web 1.30.0
-- Source: https://github.com/microsoft/onnxruntime
-- License: MIT; see /ort/LICENSE.txt
+ONNX Runtime Web is distributed under the MIT License. Its license text is included in the application's THIRD_PARTY_NOTICES.md.

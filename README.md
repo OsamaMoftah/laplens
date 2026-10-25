@@ -1,67 +1,75 @@
+---
+title: LapLens
+emoji: 🏁
+colorFrom: yellow
+colorTo: red
+sdk: static
+app_file: index.html
+license: mit
+short_description: Browser-based motorsport video analysis.
+---
+
 # LapLens
 
-[Open the live demo](https://sammoftah-laplens.static.hf.space/) · [Hugging Face Space](https://huggingface.co/spaces/sammoftah/laplens)
+Review racing footage with car detection, sponsor-reference matching, and calibrated section-speed estimates. Analysis runs in your browser. Your video stays on your device.
 
-LapLens is a local-first motorsport footage review demo. It detects cars in sampled video frames, optionally looks for a user-supplied sponsor mark inside those cars, and lets an analyst calculate section-average speed from two measured gates in a fixed-camera shot.
+![LapLens workspace](screenshot.png)
 
-The UI is an evidence viewer: seek to the sampled frame, inspect the detection overlay, select an observed exposure window, and export the run as JSON. The sample uses a warm paper and yellow palette with red measurement accents. Barlow Condensed is used for display text, Karla for interface copy, and IBM Plex Mono for timecodes and telemetry.
+## Use
 
-## Run locally
+1. Load the sample or choose a browser-supported MP4 or WebM: 1–30 seconds, up to 250 MB.
+2. Optionally add a clear, tightly cropped sponsor logo.
+3. Analyze the clip, inspect observations on the timeline, and export the run as JSON.
+4. For section speed, use a stationary-camera shot, enter the measured distance between two gates, and place the gates across the track.
 
-Requirements: Node.js 22 or newer, pnpm 9, and a current desktop browser with WebAssembly support.
+The first run downloads the model. Runtime depends on your browser and hardware. WebGPU is preferred; WebAssembly is the fallback. No inference server is required.
+
+## How it works
+
+- **Detection:** quantized RF-DETR Nano identifies COCO `car` objects in a dedicated worker. Clips up to 12 seconds are sampled at 3 Hz; longer clips at 1 Hz.
+- **Tracking:** overlap and center distance associate detections across sampled frames. Solid boxes show observations. Dashed boxes estimate positions between nearby observations and may bridge changed track IDs.
+- **Sponsor matching:** OpenCV ORB features and a RANSAC homography compare the supplied reference against detected car crops. OpenCV loads only when a reference is supplied.
+- **Section speed:** measured gate distance divided by interpolated crossing time for one associated track. Results require a fixed-camera confirmation and a supplied distance.
+- **Playback:** overlays follow the video's current time. A separate decoder generates timeline thumbnails.
+
+## Measurement limits
+
+Car observations are frame detections, not verified unique vehicles. Track IDs can fragment or switch during occlusion, camera motion, and cuts. Estimated playback boxes add no measured evidence.
+
+Sponsor matches indicate visual-feature agreement with a supplied reference. They are not OCR, verified brand identity, or a broadcast-exposure rating. Exposure windows connect nearby sampled matches; intervening frames are not independently measured.
+
+Section speed is an approximate average, not instantaneous speed. Camera movement, incorrect gate distance, missed detections, or track switches can invalidate it. There are no validated accuracy or speed-error claims. This demo needs ground-truth evaluation before operational use.
+
+## Develop
+
+Requires Node.js 22–24 and pnpm 9.
 
 ```sh
 pnpm install
 pnpm dev
 ```
 
-Open [http://localhost:3210](http://localhost:3210). The first analysis initializes the local RF-DETR model; OpenCV.js loads only when you add a sponsor reference. Initial model download and analysis time depend on your connection and device.
-
-The built-in clip is optional. Use **Choose clip** to select a video supported by your browser. For this demo, clips must be 1–30 seconds and under 250 MB. Short clips are sampled at 3 frames per second; longer clips use 1 frame per second to bound browser-side work. All inference runs locally. No video or logo image is sent to a server.
-
-## Workflow
-
-1. Load the example or select an authorized race clip.
-2. Optionally add a tight, clear sponsor-logo crop. The reference is matched with ORB visual features inside detected car boxes; this is not OCR or a pretrained sponsor classifier.
-3. Run analysis. Solid yellow boxes are observed car detections. Dashed yellow boxes are display estimates between nearby observations; a conservative spatial bridge may span a changed track ID. Red logo boxes are shown only at measured match frames. Short yellow traces connect nearby observed car centers.
-4. Select an exposure window to seek to its first observed match. Export a JSON report for a run record.
-5. For a section-speed estimate, confirm the camera stayed fixed, enter the real distance between gates, and place two lines across the track. A result appears only when one associated car track crosses both lines in order.
-
-## What the numbers mean
-
-- **Car observations** are the COCO `car` category detections returned by the included RF-DETR Nano ONNX model at 3 Hz for clips up to 12 seconds and 1 Hz for longer clips. They are frame observations, not verified unique vehicles. Dashed playback boxes are visual estimates, including conservative bridges across ID changes; they add no detections or measured evidence.
-- **Track IDs** are lightweight association by overlap and center distance. They can switch or fragment under occlusion, camera motion, or cuts.
-- **Sponsor matches** require a user-provided reference image. ORB descriptors and a RANSAC homography test for local visual-feature agreement within a detected car crop. The count is observed matching frames, not a validated broadcast-exposure rating or a brand identity guarantee.
-- **Exposure windows** group matches that occur close together in the sampled frame stream. The displayed window between those observations is estimated; the app does not measure every intervening frame.
-- **Section speed** is distance between user-marked gates divided by interpolated crossing time for one track. It is an approximate average over that section, not instantaneous speed. It is hidden until the analyst confirms a stationary camera and supplies the distance. Camera movement, variable frame timing, poor detections, or track switches can invalidate the estimate.
-
-This is an engineering portfolio MVP, not an operationally validated sponsorship measurement service. There are no claimed precision, recall, sponsor-attribution, or speed-error figures. Validation datasets and independent ground truth are future work.
-
-## Model and browser runtime
-
-- Car detector: [RF-DETR Nano ONNX, COCO](https://huggingface.co/onnx-community/rfdetr_nano-ONNX), quantized ONNX model served from `public/models/rfdetr-nano/`.
-- Inference: ONNX Runtime Web prefers WebGPU when the browser exposes it, then falls back to WebAssembly if GPU session setup or inference fails.
-- Sponsor reference matching and image crops: OpenCV.js ORB features, Hamming matching, and RANSAC homography.
-- Sampling and rendering: a dedicated worker performs inference; the video remains on the main page and overlays follow `video.currentTime`.
-
-## Licenses and attribution
-
-The application source is MIT licensed. Included third-party code, model files, fonts, and sample media retain their own licenses; see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). In particular, the built-in video is an adapted excerpt of Sarah Stierch's CC BY 4.0 raceway video and must retain its attribution when redistributed.
-
-## Design previews
-
-Two real-footage screen directions are available at `/design/direction-a.html` (Pitwall) and `/design/direction-b.html` (Frame Journal). The implemented Pitwall workspace adds a separate video decoder for thumbnail previews, keyboard-friendly transport controls, playback speed, expanded video, overlay visibility, a measured activity timeline, and explicit run states. The analyzer and worker remain unchanged by the visual redesign.
-
-## Static demo deployment
-
-The static export uses the same browser CV worker as the regular Next.js build. It needs no inference server.
+Open http://localhost:3210.
 
 ```sh
+pnpm lint
+pnpm typecheck
 pnpm build:space
-pnpm preview:space  # local preview with video byte-range support
-hf upload sammoftah/laplens out . --repo-type space
+pnpm preview:space
 ```
 
-`build:space` creates `out/` and copies the Space card and notices. Authenticate the Hugging Face CLI before publishing. `pnpm build` retains the existing standalone output for Node hosting.
+`src/components` contains the workspace and filmstrip. `src/lib` contains the analyzer, vision worker, and shared types. `src/app` contains the page, layout, and stylesheet. `public` holds the sample footage, model, and generated runtime assets.
 
-The included sample is requested with anonymous CORS because the host may redirect large media files to a CDN. Use a preview server that supports HTTP byte ranges; a plain Python SimpleHTTPServer can repeat the opening frame while seeking.
+## Deploy
+
+`pnpm build:space` produces `out/`, including this project card and the required notices. After authenticating the Hugging Face CLI:
+
+```sh
+hf upload <account>/laplens out . --repo-type space
+```
+
+Use a Static Space. Other static hosts must support video byte ranges and serve the worker and model assets from the same origin. The sample video uses anonymous CORS for CDN redirects. `pnpm build` produces a standalone Next.js build for Node hosting.
+
+## License
+
+Application code is MIT licensed. Models, libraries, fonts, and footage retain their own licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The sample is an adapted excerpt of Sarah Stierch's CC BY 4.0 raceway video; retain its attribution when redistributing it.
