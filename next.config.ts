@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  output: process.env.LAPLENS_STATIC_EXPORT === "1" ? "export" : "standalone",
   outputFileTracingRoot: process.cwd(),
   poweredByHeader: false,
   webpack(config, { isServer }) {

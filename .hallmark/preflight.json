@@ -1,0 +1,1 @@
+{"date":"2026-10-25","framework":"Next.js 16 App Router","fontsBefore":["Jost Variable","Karla Variable","system mono"],"tokens":"src/app/tokens.css","motion":"CSS transitions","scope":"single workspace route","sourceFiles":["src/components/Workspace.tsx","src/app/layout.tsx","src/app/globals.css"]}

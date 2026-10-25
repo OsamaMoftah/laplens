@@ -30,3 +30,7 @@ The quantized COCO model in `public/models/rfdetr-nano/` is from [onnx-community
 - [Karla](https://github.com/googlefonts/karla), SIL Open Font License 1.1.
 
 Font packages are included through Fontsource. Their upstream OFL license texts are retained in `public/fonts/jost/OFL.txt` and `public/fonts/karla/OFL.txt`.
+
+### Barlow Condensed and IBM Plex Mono
+
+These fonts are distributed under the SIL Open Font License 1.1 through Fontsource. Their license texts are included in `public/fonts/barlow-condensed/OFL.txt` and `public/fonts/ibm-plex-mono/OFL.txt`.

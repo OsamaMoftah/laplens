@@ -2,19 +2,25 @@
 
 import { useEffect, useRef, useState, type ChangeEvent, type MouseEvent } from "react";
 import Image from "next/image";
-import { Activity, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, CircleHelp, Crosshair, Gauge, ImagePlus, LockKeyhole, Pause, Play, Radar, ScanLine, ShieldCheck, Upload, X } from "lucide-react";
+import { Activity, AlertCircle, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, ChevronRight, CircleHelp, Crosshair, Eye, EyeOff, Flag, Gauge, ImagePlus, LockKeyhole, Maximize2, Minimize2, Pause, Play, Plus, ScanLine, ShieldCheck, SkipBack, SkipForward, Upload, X } from "lucide-react";
 import { LocalRaceAnalyzer } from "@/lib/analyzer";
+import { Filmstrip } from "./Filmstrip";
 import type { CarObservation, ExposureInterval, LogoObservation, RunResult, SponsorReference, SpeedResult } from "@/lib/types";
 
 type GatePoint = [number, number];
 type IndexedObservation = { time: number; car: CarObservation };
 type DisplayCar = { observation: CarObservation; interpolated: boolean; stableTrackId: boolean };
+type OverlayPalette = { yellow: string; red: string; ink: string; outline: string; onDark: string; mono: string };
 
 const DEMO_VIDEO = "/demo/baylands-race.webm";
 const DEMO_NAME = "Baylands Raceway · practice laps";
 
 export function Workspace() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const speedDetailsRef = useRef<HTMLDetailsElement>(null);
+  const playerRef = useRef<HTMLDivElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const analyzerRef = useRef<LocalRaceAnalyzer | null>(null);
@@ -25,6 +31,14 @@ export function Workspace() {
   const [duration, setDuration] = useState(10);
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
+  const [overlaysVisible, setOverlaysVisible] = useState(true);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [videoExpanded, setVideoExpanded] = useState(false);
+  const [mediaSize, setMediaSize] = useState({ width: 0, height: 0 });
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [notice, setNotice] = useState("");
   const [reference, setReference] = useState<SponsorReference | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
   const [progress, setProgress] = useState<{ current: number; total: number; stage: string } | null>(null);
@@ -39,6 +53,15 @@ export function Workspace() {
   const logoSamples = result?.frames.reduce((sum, frame) => sum + frame.logos.length, 0) ?? 0;
   const carSamples = result?.frames.reduce((sum, frame) => sum + frame.cars.length, 0) ?? 0;
   const uniqueCars = new Set(result?.frames.flatMap(frame => frame.cars.map(car => car.trackId)) ?? []).size;
+  const running = progress !== null;
+  const progressPercent = progress && progress.total > 0 ? Math.round(progress.current / progress.total * 100) : 0;
+  const nearestFrame = result?.frames.reduce<(typeof result.frames)[number] | null>((best, frame) => !best || Math.abs(frame.time - currentTime) < Math.abs(best.time - currentTime) ? frame : best, null);
+
+  useEffect(() => {
+    if (!running || runStartedAt === null) return;
+    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - runStartedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [running, runStartedAt]);
 
   useEffect(() => () => {
     abortRef.current?.abort();
@@ -48,12 +71,66 @@ export function Workspace() {
   useEffect(() => () => { if (videoObjectUrl) URL.revokeObjectURL(videoObjectUrl); }, [videoObjectUrl]);
 
   useEffect(() => {
+    if (!videoExpanded) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflowY;
+    document.body.style.overflowY = "hidden";
+    playerRef.current?.focus();
+    const keys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); setVideoExpanded(false); }
+      if (event.key !== "Tab") return;
+      const controls = Array.from(playerRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), select:not(:disabled), input:not(:disabled)') ?? []);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === playerRef.current)) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", keys);
+    return () => {
+      document.removeEventListener("keydown", keys);
+      document.body.style.overflowY = previousOverflow;
+      previousFocus?.focus({ preventScroll: true });
+    };
+  }, [videoExpanded]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const syncReadiness = () => {
+      const decoded = video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && Number.isFinite(video.duration);
+      setVideoReady(decoded);
+      if (video.videoWidth) setMediaSize({ width: video.videoWidth, height: video.videoHeight });
+      if (Number.isFinite(video.duration)) setDuration(video.duration);
+    };
+    // Cached media may emit loadeddata before client hydration attaches handlers.
+    const initialRead = requestAnimationFrame(syncReadiness);
+    video.addEventListener("loadeddata", syncReadiness);
+    video.addEventListener("canplay", syncReadiness);
+    video.addEventListener("emptied", syncReadiness);
+    return () => {
+      cancelAnimationFrame(initialRead);
+      video.removeEventListener("loadeddata", syncReadiness);
+      video.removeEventListener("canplay", syncReadiness);
+      video.removeEventListener("emptied", syncReadiness);
+    };
+  }, [videoUrl]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     const stage = stageRef.current;
     const context = canvas?.getContext("2d");
     if (!canvas || !video || !stage || !context) return;
+    const tokens = getComputedStyle(document.documentElement);
+    const palette: OverlayPalette = {
+      yellow: tokens.getPropertyValue("--color-yellow").trim(),
+      red: tokens.getPropertyValue("--color-red").trim(),
+      ink: tokens.getPropertyValue("--color-ink").trim(),
+      outline: tokens.getPropertyValue("--color-overlay-outline").trim(),
+      onDark: tokens.getPropertyValue("--color-on-dark").trim(),
+      mono: tokens.getPropertyValue("--font-mono").trim(),
+    };
     let frame = 0;
+    let lastUiUpdate = 0;
     const draw = () => {
       const rect = stage.getBoundingClientRect();
       const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -69,12 +146,17 @@ export function Workspace() {
         const offsetX = (rect.width - shownWidth) / 2;
         const offsetY = (rect.height - shownHeight) / 2;
         const now = video.currentTime;
+        if (!video.paused && performance.now() - lastUiUpdate > 50) {
+          setCurrentTime(now);
+          lastUiUpdate = performance.now();
+        }
         const sample = result?.frames.reduce<(typeof result.frames)[number] | null>((best, candidate) =>
           !best || Math.abs(candidate.time - now) < Math.abs(best.time - now) ? candidate : best, null) ?? null;
-        const isSynchronized = !!sample && Math.abs(sample.time - now) <= 0.29;
+        const isSynchronized = !!sample && Math.abs(sample.time - now) <= Math.min(0.16, 0.5 / (result?.sampleHz ?? 3));
         const position = (x: number, y: number) => [offsetX + x * video.videoWidth * scale, offsetY + y * video.videoHeight * scale] as const;
 
-        if (result && sample) {
+        if (result && sample && overlaysVisible) {
+          const occupiedLabels: Array<{ x: number; y: number; width: number; height: number }> = [];
           const histories = new Map<number, Array<{ x: number; y: number; time: number }>>();
           for (const observedFrame of result!.frames) {
             if (observedFrame.time < now - 1.6 || observedFrame.time > now + 0.02) continue;
@@ -92,26 +174,27 @@ export function Workspace() {
               const to = position(points[index].x, points[index].y);
               const age = now - points[index].time;
               context.beginPath(); context.moveTo(from[0], from[1]); context.lineTo(to[0], to[1]);
-              context.lineWidth = Math.max(1.5, 3.5 * scale);
-              context.lineCap = "round"; context.strokeStyle = `rgba(242, 191, 69, ${Math.max(.12, .78 - age * .42)})`; context.stroke();
+              context.lineWidth = 1.5;
+              context.lineCap = "round"; context.strokeStyle = palette.yellow;
+              context.globalAlpha = Math.max(.12, .6 - age * .35); context.stroke(); context.globalAlpha = 1;
             }
           }
           for (const item of carsAtTime(result, now)) {
             const car = item.observation;
             const label = item.interpolated
-              ? item.stableTrackId ? `CAR ${String(car.trackId).padStart(2, "0")} · EST` : "CAR · EST"
-              : `CAR ${String(car.trackId).padStart(2, "0")} · ${Math.round(car.detectorScore * 100)}%`;
-            drawBox(context, car, position, "#f0bf43", label, item.interpolated);
+              ? item.stableTrackId ? `C${String(car.trackId).padStart(2, "0")} EST` : "CAR EST"
+              : `C${String(car.trackId).padStart(2, "0")} ${Math.round(car.detectorScore * 100)}%`;
+            drawBox(context, car, position, palette.yellow, label, item.interpolated, palette, occupiedLabels);
           }
-          if (isSynchronized) for (const logo of sample.logos) drawBox(context, logo, position, "#e55b43", `${reference?.name ?? "SPONSOR"} · ${logo.inliers} pts`);
+          if (isSynchronized) for (const logo of sample.logos) drawBox(context, logo, position, palette.red, `${reference?.name ?? "SPONSOR"} · ${logo.inliers} pts`, false, palette, occupiedLabels);
         }
-        drawGateLines(context, gatePoints, position);
+        drawGateLines(context, gatePoints, position, palette);
       }
       frame = requestAnimationFrame(draw);
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [result, reference, gatePoints]);
+  }, [result, reference, gatePoints, overlaysVisible]);
 
   const handleVideoFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -124,7 +207,9 @@ export function Workspace() {
     setVideoObjectUrl(objectUrl);
     setVideoUrl(objectUrl);
     setVideoName(file.name);
+    setVideoReady(false); setCurrentTime(0); setPlaying(false);
     setResult(null); setSpeedResult(null); setSelectedExposure(null); setError("");
+    setGatePoints([]); setGateMode(false); setNotice("");
   };
 
   const handleLogoFile = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -155,13 +240,15 @@ export function Workspace() {
 
   const runAnalysis = async () => {
     const video = videoRef.current;
-    if (!video) return;
-    setError(""); setResult(null); setSpeedResult(null); setSelectedExposure(null);
+    if (!video || !videoReady || running) return;
+    setError(""); setNotice(""); setResult(null); setSpeedResult(null); setSelectedExposure(null);
+    setGateMode(false); setGatePoints([]);
     if (video.duration > 30) { setError("This browser demo samples clips up to 30 seconds. Trim the video and try again."); return; }
     const resumeAt = video.currentTime;
     const wasPlaying = !video.paused;
     video.pause(); setPlaying(false);
     const abort = new AbortController(); abortRef.current = abort;
+    setRunStartedAt(Date.now()); setElapsedSeconds(0);
     const sampleHz = video.duration <= 12 ? 3 : 1;
     setProgress({ current: 0, total: Math.ceil(video.duration * sampleHz), stage: "Loading local vision engine" });
     try {
@@ -174,7 +261,8 @@ export function Workspace() {
       setCurrentTime(video.currentTime);
       if (wasPlaying) { try { await video.play(); } catch { setPlaying(false); } }
     } catch (cause) {
-      if (!(cause instanceof DOMException && cause.name === "AbortError")) setError(cause instanceof Error ? cause.message : "Analysis could not complete.");
+      if (cause instanceof DOMException && cause.name === "AbortError") setNotice("Run cancelled. Your clip is ready to analyze again.");
+      else setError(cause instanceof Error ? cause.message : "Analysis could not complete. Try the sample clip or choose another video.");
     } finally { abortRef.current = null; setProgress(null); }
   };
 
@@ -241,140 +329,128 @@ export function Workspace() {
     else { video.pause(); setPlaying(false); }
   };
 
-  return <div className="app-shell">
-    <aside className="sidebar">
-      <a className="brand" href="#top" aria-label="LapLens home">
-        <span className="brand-mark"><Radar size={19} strokeWidth={2.4} /></span>
-        <span className="brand-copy"><span className="brand-name">LapLens</span><span className="brand-caption">RACE EXPOSURE LAB</span></span>
-      </a>
-      <div className="rail-label">WORKSPACE</div>
-      <nav className="sidebar-nav" aria-label="Workspace sections">
-        <a className="rail-link active" href="#analysis"><ScanLine size={17} /><span>Analysis</span></a>
-        <a className="rail-link" href="#sponsors"><Activity size={17} /><span>Sponsor marks</span></a>
-        <a className="rail-link" href="#speed"><Gauge size={17} /><span>Speed estimate</span></a>
+  const seekFromLane = (event: MouseEvent<HTMLButtonElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    seekTo(clamp((event.clientX - rect.left) / rect.width) * duration);
+  };
+
+  const useSampleClip = () => {
+    setVideoObjectUrl(null); setVideoUrl(DEMO_VIDEO); setVideoName(DEMO_NAME);
+    setVideoReady(false); setResult(null); setSpeedResult(null); setSelectedExposure(null);
+    setCurrentTime(0); setError(""); setNotice(""); setGatePoints([]); setGateMode(false);
+  };
+
+
+  return <div className="app-shell pitwall">
+    <aside inert={videoExpanded} className="tool-rail" aria-label="Workspace navigation">
+      <a className="rail-brand" href="#top" aria-label="LapLens home"><span /><span /></a>
+      <nav className="tool-links">
+        <a className="tool-link active" href="#analysis" aria-label="Video analysis" title="Video analysis"><ScanLine size={20} /></a>
+        <a className="tool-link" href="#sponsors" aria-label="Sponsor evidence" title="Sponsor evidence"><Flag size={19} /></a>
+        <a className="tool-link" href="#speed" aria-label="Speed calibration" title="Speed calibration" onClick={() => { if (speedDetailsRef.current) speedDetailsRef.current.open = true; }}><Gauge size={20} /></a>
       </nav>
-      <div className="rail-spacer" />
-      <div className="privacy-note"><strong><LockKeyhole size={13} /> Runs on this device</strong>Video and logo files stay in your browser.</div>
-      <details className="help-details"><summary className="icon-button" aria-label="About this demo"><CircleHelp size={17} /></summary><div className="help-popover"><strong>About LapLens</strong><p>Sampled computer vision for racing footage. Findings are limited to what is visible in each decoded frame.</p></div></details>
+      <div className="rail-bottom"><details className="workspace-help"><summary aria-label="About this demo" title="About this demo"><CircleHelp size={20} /></summary><div className="help-popover"><strong>Every finding has a frame.</strong><p>LapLens samples racing footage for cars and supplied sponsor references. Track IDs can change; estimated boxes are dashed. Speed requires measured gates and a fixed camera.</p><a href="https://github.com/OsamaMoftah/laplens" target="_blank" rel="noreferrer">View source <ArrowUpRight size={13} /></a></div></details><span className="rail-avatar" aria-label="Local workspace">LL</span></div>
     </aside>
 
     <div className="workspace" id="top">
-      <header className="topbar">
-        <div className="crumbs"><span>Workspace</span><ChevronRight size={14} /><strong>Exposure review</strong></div>
-        <div className="top-actions"><span className="status-pill"><span className="status-dot" /> Local analysis</span><span className="top-avatar" aria-label="Local workspace">LL</span></div>
-      </header>
-      <main className="content" id="analysis">
-        <div className="page-heading">
-          <div><div className="eyebrow"><span className="eyebrow-rule" /> MOTORSPORT INTELLIGENCE <span className="eyebrow-rule" /></div><h1>Exposure review</h1><p>See when a sponsor is visible, and inspect the frame evidence behind each match.</p></div>
-          <div className="heading-actions">
-            <label className="button" htmlFor="video-file"><Upload size={15} /> Choose clip</label>
-            <input className="hidden-input" id="video-file" type="file" accept="video/mp4,video/webm,video/quicktime,video/*" onChange={handleVideoFile} />
-            {result ? <button className="button" onClick={exportAnalysis}><ArrowDownToLine size={15} /> Export report</button> : null}
-            <button className="button primary" onClick={progress ? () => abortRef.current?.abort() : runAnalysis}>
-              {progress ? <><X size={15} /> Cancel</> : <><ScanLine size={15} /> Analyze clip</>}
-            </button>
-          </div>
-        </div>
+      <header inert={videoExpanded} className="workspace-header"><a href="#top" className="workspace-wordmark">LAPLENS<span>MOTORSPORT ANALYSIS</span></a><div className="workspace-presence"><LockKeyhole size={13} /><span>Local workspace</span></div></header>
+      <main className="review-content" id="analysis">
+        <div inert={videoExpanded} className="review-heading"><div><p className="workspace-path">Workspace <ChevronRight size={12} /> Session review</p><h1>Exposure review</h1><p className="review-description">Follow the cars. Inspect the evidence behind every match.</p></div><div className="heading-actions">
+          <input ref={videoInputRef} className="hidden-input" id="video-file" aria-label="Choose race video" type="file" accept="video/mp4,video/webm,video/quicktime,video/*" disabled={running} onChange={handleVideoFile} />
+          <button className="button" onClick={() => videoInputRef.current?.click()} disabled={running}><Upload size={15} /> Choose clip</button>
+          <button className="button export-button" disabled={!result || running} onClick={exportAnalysis} title={result ? "Download the measured analysis as JSON" : "Analyze a clip to enable export"}><ArrowDownToLine size={15} /><span>Export report</span></button>
+          <button className={`button primary${running ? " is-running" : ""}`} disabled={!videoReady} onClick={running ? () => abortRef.current?.abort() : runAnalysis}>{running ? <><X size={16} /> Cancel run</> : <><ScanLine size={16} /> Analyze clip</>}</button>
+        </div></div>
 
-        <div className="run-summary"><span><span className="summary-dot yellow" /> Source <strong>{videoName}</strong></span><span className="bullet" /><span>Up to 30 sec</span><span className="bullet" /><span>{result ? `${result.sampleHz} frames/sec` : "Up to 3 frames/sec"}</span>{result ? <><span className="bullet" /><span>Processed <strong>{(result.elapsedMs / 1000).toFixed(1)}s</strong></span></> : null}</div>
+        {error ? <div className="analysis-alert" role="alert"><AlertCircle size={19} /><div><strong>Analysis needs your attention</strong><p>{error}</p></div><button className="text-action" onClick={videoUrl === DEMO_VIDEO ? runAnalysis : useSampleClip} disabled={running || (videoUrl === DEMO_VIDEO && !videoReady)}>{videoUrl === DEMO_VIDEO ? "Try again" : "Use sample clip"}<ArrowUpRight size={14} /></button><button className="quiet-icon" onClick={() => setError("")} aria-label="Dismiss error"><X size={16} /></button></div> : null}
+        {notice ? <div className="analysis-notice" role="status"><Check size={15} />{notice}</div> : null}
 
-        <div className="main-grid">
-          <section className="left-stack" aria-label="Video review">
-            <div className="video-panel">
-              <div className="video-head"><div className="video-title"><span className="live-square" /><span title={videoName}>{videoName}</span></div><span className="video-meta">{result ? `${result.width} × ${result.height} · SAMPLED` : "VIDEO EVIDENCE"}</span></div>
+        <div className="review-grid">
+          <section className="review-player-column" aria-label="Video review">
+            <div ref={playerRef} className="video-panel" data-expanded={videoExpanded} role={videoExpanded ? "dialog" : "region"} aria-modal={videoExpanded || undefined} tabIndex={0} aria-label="Video player. Space to play or pause; arrow keys to seek." onKeyDown={event => { if (event.target !== event.currentTarget || running) return; if (event.key === " ") { event.preventDefault(); void togglePlayback(); } if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); seekTo(currentTime + (event.key === "ArrowRight" ? .5 : -.5)); } }}>
+              <div className="video-head"><div className="video-title"><span className="live-square" /><span title={videoName}>{videoName}</span></div><span className="video-meta">{mediaSize.width ? `${mediaSize.width} × ${mediaSize.height}` : "LOADING VIDEO"}<span className="meta-divider">/</span>{duration.toFixed(1)} SEC</span></div>
               <div ref={stageRef} className={`stage${gateMode ? " gate-mode" : ""}`}>
-                <video ref={videoRef} src={videoUrl} playsInline preload="metadata" onLoadedMetadata={event => setDuration(event.currentTarget.duration || 10)} onTimeUpdate={onTimeUpdate} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+                <video ref={videoRef} crossOrigin="anonymous" src={videoUrl} playsInline preload="auto" onLoadedMetadata={event => { const video = event.currentTarget; setDuration(Number.isFinite(video.duration) ? video.duration : 0); setMediaSize({ width: video.videoWidth, height: video.videoHeight }); video.playbackRate = playbackRate; }} onLoadedData={() => setVideoReady(true)} onError={() => { setVideoReady(false); setError("This video could not be decoded. Choose an MP4 or WebM with a browser-supported codec, or use the sample clip."); }} onTimeUpdate={onTimeUpdate} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
                 <canvas ref={canvasRef} onClick={onStageClick} aria-label={gateMode ? "Click four points to draw two speed gates" : "Synchronized car detection overlay"} />
-                {!result && !progress ? <div className="overlay-tip"><span className="tip-mark"><Crosshair size={14} /></span><span>Analysis overlay appears here</span></div> : null}
-                {gateMode ? <div className="gate-instruction"><Crosshair size={15} /><span>{gatePoints.length < 2 ? "Click two points for gate A" : gatePoints.length < 4 ? "Click two points for gate B" : "Saving gates…"}</span><button onClick={() => { setGateMode(false); setGatePoints([]); }} aria-label="Cancel gate calibration"><X size={14} /></button></div> : null}
-                {result && !reference ? <div className="frame-badge"><Check size={12} /> {carSamples} observed car samples</div> : null}
+                <div className={`frame-status${running ? " processing" : ""}`}><span className="status-square" />{running ? "ANALYSIS IN PROGRESS" : result ? overlaysVisible ? "TRACKING OVERLAY" : "CLEAN VIDEO" : "UNANALYZED CLIP"}</div>
+                {result && nearestFrame && overlaysVisible ? <div className="frame-readout">{nearestFrame.cars.length} cars at {formatPreciseTime(nearestFrame.time)}<span>NEAREST SAMPLE</span></div> : null}
+                {gateMode ? <div className="gate-instruction"><Crosshair size={15} /><span>{gatePoints.length < 2 ? "Click two points for gate A" : "Click two points for gate B"}</span><button onClick={() => { setGateMode(false); setGatePoints([]); }} aria-label="Cancel gate calibration"><X size={14} /></button></div> : null}
               </div>
-              <div className="video-controls">
-                <button className="play-button" onClick={togglePlayback} aria-label={playing ? "Pause video" : "Play video"}>{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button>
-                <input aria-label="Video timeline" className="scrubber" type="range" min="0" max={Math.max(.01, duration)} step="0.01" value={Math.min(currentTime, duration)} onChange={event => seekTo(Number(event.target.value))} />
-                <span className="timecode">{formatTime(currentTime)} <span>/</span> {formatTime(duration)}</span>
-                <button className="video-control-button" onClick={() => seekTo(currentTime + .5)}><span>+0.5s</span><ArrowUpRight size={13} /></button>
+              <div className="transport">
+                <button className="play-button" disabled={running || !videoReady} onClick={togglePlayback} aria-label={playing ? "Pause video" : "Play video"}>{playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}</button>
+                <div className="transport-steps"><button className="quiet-icon" disabled={running || !videoReady} onClick={() => seekTo(currentTime - .5)} aria-label="Back half a second"><SkipBack size={16} /></button><button className="quiet-icon" disabled={running || !videoReady} onClick={() => seekTo(currentTime + .5)} aria-label="Forward half a second"><SkipForward size={16} /></button></div>
+                <span className="precise-time">{formatPreciseTime(currentTime)}<span> / {formatPreciseTime(duration)}</span></span>
+                <input aria-label="Video timeline" className="scrubber" type="range" min="0" max={Math.max(.01, duration)} step="0.01" value={Math.min(currentTime, duration)} disabled={running || !videoReady} onChange={event => seekTo(Number(event.target.value))} />
+                <label className="playback-rate"><span className="sr-only">Playback speed</span><select value={playbackRate} onChange={event => { const rate = Number(event.target.value); setPlaybackRate(rate); if (videoRef.current) videoRef.current.playbackRate = rate; }} disabled={running}><option value="0.5">0.5×</option><option value="1">1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+                <button className="quiet-icon overlay-control" disabled={!result || running} onClick={() => setOverlaysVisible(value => !value)} aria-label={overlaysVisible ? "Hide tracking overlay" : "Show tracking overlay"} aria-pressed={overlaysVisible} title={overlaysVisible ? "Hide overlay" : "Show overlay"}>{overlaysVisible ? <Eye size={18} /> : <EyeOff size={18} />}</button>
+                <button className="quiet-icon" onClick={() => setVideoExpanded(value => !value)} aria-label={videoExpanded ? "Exit expanded video" : "Expand video"} title={videoExpanded ? "Exit expanded video (Esc)" : "Expand video"}>{videoExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
               </div>
-              {progress ? <div className="progress-wrap" role="status" aria-live="polite"><div className="progress-copy"><span>{progress.stage}…</span><strong>{progress.current} / {progress.total}</strong></div><div className="progress-bar"><span style={{ width: `${Math.min(100, progress.total ? progress.current / progress.total * 100 : 6)}%` }} /></div></div> : null}
+              {running ? <div className="player-progress" role="status" aria-live="polite"><span className="running-indicator" /><span>{progress.stage}</span><strong>{progress.current}<span> / {progress.total} frames</span></strong><div className="progress-bar"><span style={{ transform: `scaleX(${progressPercent / 100})` }} /></div><span className="elapsed">{formatTime(elapsedSeconds)} elapsed</span></div> : null}
             </div>
 
-            <section className="timeline" aria-label="Observed sponsor exposure windows">
-              <div className="timeline-top"><h2 className="panel-title">Exposure timeline</h2><span className="micro-label">{result ? `${result.exposures.length} OBSERVED WINDOWS` : "RUN ANALYSIS TO POPULATE"}</span></div>
-              <div className="timeline-track" aria-label="Sponsor exposure events">
-                {result?.exposures.map((exposure, index) => (
-                  <button
-                    key={`${exposure.sponsorId}-${exposure.start}-${index}`}
-                    title={`${reference?.name ?? "Sponsor"}: ${formatTime(exposure.start)}–${formatTime(exposure.end)}`}
-                    className={`timeline-segment${selectedExposure === exposure ? " selected" : ""}`}
-                    style={{
-                      left: `${exposure.start / Math.max(duration, .01) * 100}%`,
-                      width: `${Math.max(.7, (exposure.end - exposure.start + .5) / Math.max(duration, .01) * 100)}%`,
-                    }}
-                    onClick={() => selectExposure(exposure)}
-                    aria-label={`Exposure from ${formatTime(exposure.start)} to ${formatTime(exposure.end)}`}
-                  />
-                ))}
-                <span className="timeline-playhead" style={{ left: `${currentTime / Math.max(duration, .01) * 100}%` }} />
-              </div>
-              <div className="timeline-ticks"><span>00:00</span><span>{formatTime(duration / 2)}</span><span>{formatTime(duration)}</span></div>
+            <section inert={videoExpanded} className="session-timeline" aria-label="Analysis timeline">
+              <div className="timeline-heading"><h2>Session timeline</h2><div className="timeline-legend"><span><i className="legend-car" />Cars</span><span><i className="legend-sponsor" />Sponsor matches</span></div></div>
+              <Filmstrip key={videoUrl} src={videoUrl} duration={duration} currentTime={currentTime} disabled={running} onSeek={seekTo} />
+              <div className="timeline-ruler">{[0,.25,.5,.75,1].map(fraction => <span key={fraction}>{formatPreciseTime(duration * fraction)}</span>)}</div>
+              <div className="timeline-lane"><span className="lane-name">CARS</span><div className="lane-content"><button className="activity-lane" disabled={running} onClick={seekFromLane} aria-label="Seek car detection timeline">{result ? result.frames.map((frame, index) => frame.cars.length ? <span className="activity-mark" key={index} style={{ left: `${frame.time / Math.max(duration,.01) * 100}%`, height: `${Math.min(28,8 + frame.cars.length * 3)}px` }} /> : null) : <span className="lane-empty">Run analysis to see observed detections</span>}</button><span className="lane-playhead" style={{ left: `${clamp(currentTime / Math.max(duration,.01)) * 100}%` }} /></div></div>
+              <div className="timeline-lane"><span className="lane-name">SPONSORS</span><div className="lane-content sponsor-lane">{result?.exposures.map((exposure,index) => <button key={`${exposure.sponsorId}-${index}`} className={`exposure-mark${selectedExposure === exposure ? " selected" : ""}`} style={{ left: `${exposure.start / Math.max(duration,.01) * 100}%`, width: `${Math.max(1,(exposure.end - exposure.start + 1 / result.sampleHz) / Math.max(duration,.01) * 100)}%` }} onClick={() => selectExposure(exposure)} aria-label={`Exposure from ${formatTime(exposure.start)} to ${formatTime(exposure.end)}`} title={`${reference?.name}: ${formatPreciseTime(exposure.start)}–${formatPreciseTime(exposure.end)}`} />)}{!result?.exposures.length ? <span className="lane-empty">{!reference ? "Add a logo reference to look for matching frames" : result ? "No qualifying visual matches in this run" : "Logo matches will appear after analysis"}</span> : null}<span className="lane-playhead" style={{ left: `${clamp(currentTime / Math.max(duration,.01)) * 100}%` }} /></div></div>
+              <div className="evidence-key"><span className="observed-key" />Observed box<span className="estimate-key" />Display estimate<span className="evidence-key-note">Estimates add no measured detections.</span></div>
             </section>
-
-            <div className="source-line"><span>Solid boxes are observed detections; dashed boxes are best-effort estimates between samples. Logo evidence is time-locked to measured frames.</span><a href="https://commons.wikimedia.org/wiki/File:Salute_to_Baylands_Raceway_Park_-_July_8_2023_-_Sarah_Stierch.webm" target="_blank" rel="noreferrer">Sample footage: Sarah Stierch · CC BY 4.0</a></div>
           </section>
 
-          <aside className="side-panel" aria-label="Analysis details">
-            <section className="side-section" id="sponsors">
-              <div className="side-heading"><div><div className="micro-label">SPONSOR INTELLIGENCE</div><h2 className="panel-title">Logo evidence</h2></div><label className="icon-button" htmlFor="logo-file" title="Add logo reference"><ImagePlus size={17} /><span className="sr-only">Add sponsor logo reference</span></label></div>
-              <input className="hidden-input" id="logo-file" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleLogoFile} />
-              {reference ? <div className="sponsor-entry"><Image className="sponsor-thumb" src={reference.previewUrl} alt={`${reference.name} reference`} width={38} height={38} unoptimized /><div className="sponsor-info"><div className="sponsor-name" title={reference.name}>{reference.name}</div><div className="sponsor-sub">{result ? `${logoSamples} frame matches · ${result.sampleHz} Hz` : "Ready to scan"}</div></div><button className="remove-ref" onClick={() => { URL.revokeObjectURL(reference.previewUrl); setReference(null); referencePixels.current = null; setResult(null); }} aria-label="Remove sponsor logo"><X size={14} /></button></div> : <label className="reference-drop" htmlFor="logo-file"><ImagePlus size={18} /><strong>Add a logo reference</strong><span>Tight, clear crop works best. Stays on this device.</span></label>}
-              <div className="metric-rule" />
-              <div className="metric-kicker">OBSERVED LOGO MATCHES</div>
-              <div className="metric-value">{result ? logoSamples : "—"}<em>{result && logoSamples > 0 ? "*" : ""}</em></div>
-              <div className="metric-description">{result ? logoSamples ? "Feature matches seen in sampled frames" : "No qualifying template matches found" : "Counted only after adding a reference"}</div>
-              {result && result.exposures.length ? <div className="exposure-list">{result.exposures.map((exposure, index) => <button className={`exposure-row${selectedExposure === exposure ? " active" : ""}`} key={`${exposure.start}-${index}`} onClick={() => selectExposure(exposure)}><span className="exposure-time">{formatTime(exposure.start)} <span>–</span> {formatTime(exposure.end)}</span><span>{exposure.observations} samples <ChevronRight size={13} /></span></button>)}</div> : result ? <p className="empty-copy">No sponsor identity was confirmed by the reference matcher. Change the crop or inspect a closer view.</p> : <p className="empty-copy">Detection uses car shape; sponsor identity needs your supplied visual reference. Matching is not OCR.</p>}
+          <aside inert={videoExpanded} className="analysis-desk" aria-label="Analysis details">
+            <div className="desk-title"><h2>Analysis desk</h2><span className={`desk-state${running ? " running" : result ? " complete" : ""}`}>{running ? "RUNNING" : result ? "COMPLETE" : "READY"}</span></div>
+            <section className="desk-section run-state" aria-live="polite"><div className="section-kicker">{running ? "ANALYZING THIS CLIP" : result ? "REVIEW READY" : "START YOUR REVIEW"}</div><h3>{running ? `${progressPercent}% of frames analyzed` : result ? "The footage, examined." : "Start with the footage."}</h3><p>{running ? progress.current === 0 ? "Loading the local model. The first run can take longer." : "Finding cars in sampled frames. Keep this tab open while the run finishes." : result ? `${result.frames.length} frames sampled at ${result.sampleHz} fps. Select a frame below the video to inspect the detections.` : "Scan a short race clip for cars. Add a logo reference when you want to inspect sponsor visibility."}</p>{running ? <div className="desk-progress"><div className="progress-bar"><span style={{ transform: `scaleX(${progressPercent / 100})` }} /></div><span>{formatTime(elapsedSeconds)} elapsed <span>{progress.current} / {progress.total}</span></span></div> : <div className="run-facts"><span><span className="small-square" />{result ? `${(result.elapsedMs / 1000).toFixed(1)}s processing time` : "1–30 seconds per clip"}</span><span>{result ? result.engine.includes("WebGPU") ? "WebGPU" : "WASM" : "On this device"}</span></div>}</section>
+
+            <section className="desk-section vehicle-section"><div className="section-row"><h3>Vehicle activity</h3><Activity size={17} /></div><div className="activity-totals"><div><strong>{result ? carSamples : "—"}</strong><span>car observations</span></div><div><strong>{result ? uniqueCars : "—"}</strong><span>track IDs</span></div></div><p className="desk-caption">{result ? "Track IDs may change through occlusion or camera cuts. They are not verified unique vehicles." : "Measured counts appear when analysis completes."}</p></section>
+
+            <section className="desk-section sponsor-section" id="sponsors"><div className="section-row"><h3>Sponsor evidence</h3><Flag size={17} /></div><input ref={logoInputRef} className="hidden-input" id="logo-file" type="file" aria-label="Choose sponsor logo reference" accept="image/png,image/jpeg,image/webp" disabled={running} onChange={handleLogoFile} />
+              {reference ? <div className="sponsor-reference"><Image src={reference.previewUrl} alt={`${reference.name} reference`} width={44} height={44} unoptimized /><div><strong title={reference.name}>{reference.name}</strong><span>{result ? `${logoSamples} observed matches` : "Reference ready"}</span></div><button className="quiet-icon" disabled={running} onClick={() => { URL.revokeObjectURL(reference.previewUrl); setReference(null); referencePixels.current = null; setResult(null); }} aria-label="Remove sponsor logo"><X size={15} /></button></div> : <><p>Add a clear logo crop. LapLens looks for visual matches inside detected cars.</p><button className="add-reference" disabled={running} onClick={() => logoInputRef.current?.click()}><ImagePlus size={17} /><span>Add logo reference</span><Plus size={15} /></button></>}
+              {reference && result ? <div className="match-summary"><strong>{logoSamples}</strong><span>{logoSamples ? `matched frames across ${result.exposures.length} exposure windows` : "No qualifying visual matches. Try a sharper reference or closer footage."}</span></div> : null}
+              {result && !reference ? <div className="reference-needed"><span className="small-square" />Logo reference needed for sponsor results</div> : null}
+              {result?.exposures.length ? <div className="exposure-list">{result.exposures.map((exposure,index) => <button key={`${exposure.start}-${index}`} className={`exposure-row${selectedExposure === exposure ? " active" : ""}`} onClick={() => selectExposure(exposure)}><span className="exposure-time">{formatPreciseTime(exposure.start)}<span>–</span>{formatPreciseTime(exposure.end)}</span><span>{exposure.observations} frames<ChevronRight size={14} /></span></button>)}</div> : null}
+              {reference ? <button className="text-action" disabled={running} onClick={() => logoInputRef.current?.click()}>Change reference <ArrowUpRight size={13} /></button> : null}
             </section>
 
-            <section className="side-section">
-              <div className="side-heading"><div><div className="micro-label">VEHICLE DETECTION</div><h2 className="panel-title">Frame activity</h2></div><span className="mini-icon yellow-icon"><Radar size={15} /></span></div>
-              <div className="stat-pair"><div><div className="metric-value compact">{result ? uniqueCars : "—"}</div><div className="metric-description">track IDs seen</div></div><div><div className="metric-value compact">{result ? carSamples : "—"}</div><div className="metric-description">car observations</div></div></div>
-              <div className="method-note"><span className="method-chip">RF-DETR NANO</span><span>{result ? result.engine.includes("WebGPU") ? "COCO car class · WebGPU" : "COCO car class · WASM" : "WebGPU when available · WASM fallback"}</span></div>
-              <p className="note">Track IDs are lightweight frame-to-frame associations. They may change during occlusion or camera cuts.</p>
-            </section>
-
-            <section className="side-section" id="speed">
-              <div className="side-heading"><div><div className="micro-label">CALIBRATED MEASUREMENT</div><h2 className="panel-title">Section speed</h2></div><span className="mini-icon red-icon"><Gauge size={15} /></span></div>
-              {speedResult ? <div className="speed-result"><strong>{speedResult.speedKmh.toFixed(1)}<small> km/h</small></strong><span>section average<br />Track {String(speedResult.trackId).padStart(2, "0")}</span></div> : <div className="speed-setup">
-                <p className="note">Measure average speed between two track gates. Requires a stationary camera and a known gate distance.</p>
-                <label className="field">Distance between gates <span className="distance-control"><input type="number" min="1" max="500" step="0.5" value={gateDistance} onChange={event => { setGateDistance(Number(event.target.value)); setSpeedResult(null); }} /><span>metres</span></span></label>
-                <label className="check-row"><input type="checkbox" checked={cameraFixed} onChange={event => { setCameraFixed(event.target.checked); setSpeedResult(null); }} /> Camera stayed fixed through this section</label>
-                <div className="gate-status"><span className={`gate-dot${gatePoints.length >= 2 ? " set" : ""}`} /> Gate A {gatePoints.length >= 2 ? "placed" : "not set"}<span className={`gate-dot${gatePoints.length >= 4 ? " set" : ""}`} /> Gate B {gatePoints.length >= 4 ? "placed" : "not set"}</div>
-                <button className="button yellow full-width" disabled={!result || !cameraFixed || gateDistance <= 0 || gateMode} onClick={startGateCalibration}><Crosshair size={14} /> {gateMode ? "Click gates on video" : "Place gates on video"}</button>
-                {gatePoints.length === 4 && !speedResult && !gateMode ? <p className="error-note">No observed track crossed both gates in order. Try gates across a clearer, closer part of the lap.</p> : null}
-                {!result ? <div className="speed-lock"><LockKeyhole size={13} /> Run car detection before calibrating.</div> : null}
-              </div>}
-              {speedResult ? <><p className="note speed-caveat">Average between the two gate crossings. Not an instantaneous speed readout.</p><button className="inline-action" onClick={() => { setSpeedResult(null); startGateCalibration(); }}><Crosshair size={13} /> Recalibrate gates</button></> : null}
-            </section>
-
-            <section className="side-foot"><span><ShieldCheck size={14} /> PRIVATE BY DESIGN</span><span>Files remain in your browser</span></section>
+            <details className="speed-disclosure" id="speed" ref={speedDetailsRef}><summary><span className="section-row"><span><Gauge size={18} />Section speed</span><ChevronDown size={16} /></span><span className="disclosure-sub">{speedResult ? `${speedResult.speedKmh.toFixed(1)} km/h · section average` : "Calibrate two measured gates"}</span></summary><div className="speed-content">
+              {speedResult ? <><div className="speed-result"><strong>{speedResult.speedKmh.toFixed(1)}<small> km/h</small></strong><span>section average<br />Track {String(speedResult.trackId).padStart(2,"0")}</span></div><p className="desk-caption">Average between gate crossings. Camera movement or track switches can invalidate this estimate.</p><button className="text-action" onClick={() => { setSpeedResult(null); startGateCalibration(); }}>Recalibrate gates <Crosshair size={14} /></button></> : <div className="speed-setup"><p>Use a stationary camera and a known physical distance between two lines across the track.</p><label className="field">Distance between gates<span className="distance-control"><input type="number" min="1" max="500" step="0.5" value={gateDistance} disabled={running} onChange={event => { setGateDistance(Number(event.target.value)); setSpeedResult(null); }} /><span>metres</span></span></label><label className="check-row"><input type="checkbox" checked={cameraFixed} disabled={running} onChange={event => { setCameraFixed(event.target.checked); setSpeedResult(null); }} /><span>Camera stayed fixed through this section</span></label><div className="gate-status"><span className={`gate-dot${gatePoints.length >= 2 ? " set" : ""}`} />Gate A {gatePoints.length >= 2 ? "placed" : "not set"}<span className={`gate-dot${gatePoints.length >= 4 ? " set" : ""}`} />Gate B {gatePoints.length >= 4 ? "placed" : "not set"}</div><button className="button yellow full-width" disabled={!result || running || !cameraFixed || !Number.isFinite(gateDistance) || gateDistance <= 0 || gateMode} onClick={startGateCalibration}><Crosshair size={15} />{gateMode ? "Place gates on footage" : "Place gates on video"}</button>{!result ? <span className="desk-caption">Run car detection to enable gate measurement.</span> : null}{gatePoints.length === 4 && !speedResult && !gateMode ? <p className="error-note">No track crossed both gates in order. Try a clearer section of the clip.</p> : null}</div>}
+            </div></details>
+            <div className="desk-privacy"><ShieldCheck size={15} /><span>Private by design<small>Video and logo files stay on this device.</small></span></div>
           </aside>
         </div>
-        {error ? <div className="global-error" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss message"><X size={15} /></button></div> : null}
-        {result ? <div className="run-footer"><span><Check size={13} /> Analysis complete in {(result.elapsedMs / 1000).toFixed(1)} seconds</span><span>{logoSamples ? `${logoSamples} logo observations across ${result.exposures.length} windows` : `${carSamples} car observations · no sponsor matches${reference ? "" : " (no logo reference supplied)"}`}</span></div> : null}
+        <footer inert={videoExpanded} className="workspace-footer"><span>RF-DETR NANO <span className="footer-divider">/</span> SAMPLED BROWSER INFERENCE</span>{videoUrl === DEMO_VIDEO ? <a href="https://commons.wikimedia.org/wiki/File:Salute_to_Baylands_Raceway_Park_-_July_8_2023_-_Sarah_Stierch.webm" target="_blank" rel="noreferrer">Sample footage · Sarah Stierch · CC BY 4.0 <ArrowUpRight size={12} /></a> : <button className="text-action" disabled={running} onClick={useSampleClip}>Use sample clip <ArrowUpRight size={12} /></button>}</footer>
       </main>
     </div>
   </div>;
 }
 
-function drawBox(context: CanvasRenderingContext2D, box: CarObservation | LogoObservation, position: (x: number, y: number) => readonly [number, number], color: string, label: string, interpolated = false) {
+function drawBox(context: CanvasRenderingContext2D, box: CarObservation | LogoObservation, position: (x: number, y: number) => readonly [number, number], color: string, label: string, interpolated: boolean, palette: OverlayPalette, occupied: Array<{ x: number; y: number; width: number; height: number }>) {
   const [x, y] = position(box.x, box.y); const [right, bottom] = position(box.x + box.width, box.y + box.height);
   const width = right - x, height = bottom - y;
-  context.save(); context.setLineDash(interpolated ? [5, 4] : []);
-  context.strokeStyle = "rgba(24, 20, 16, .9)"; context.lineWidth = 5; context.strokeRect(x, y, width, height);
-  context.strokeStyle = color; context.lineWidth = 2.4; context.strokeRect(x, y, width, height);
-  context.font = "600 11px 'SFMono-Regular', Consolas, monospace";
+  const corner = Math.min(10, width / 3, height / 3);
+  context.save(); context.setLineDash(interpolated ? [3, 3] : []);
+  context.beginPath();
+  if (interpolated) context.rect(x, y, width, height);
+  else {
+    context.moveTo(x, y + corner); context.lineTo(x, y); context.lineTo(x + corner, y);
+    context.moveTo(right - corner, y); context.lineTo(right, y); context.lineTo(right, y + corner);
+    context.moveTo(right, bottom - corner); context.lineTo(right, bottom); context.lineTo(right - corner, bottom);
+    context.moveTo(x + corner, bottom); context.lineTo(x, bottom); context.lineTo(x, bottom - corner);
+  }
+  context.strokeStyle = palette.outline; context.lineWidth = 3.5; context.stroke();
+  context.strokeStyle = color; context.lineWidth = 1.5; context.stroke();
+  context.font = `400 10px ${palette.mono}`;
   const textWidth = context.measureText(label).width;
-  context.setLineDash([]); context.fillStyle = color; context.fillRect(x, Math.max(3, y - 20), textWidth + 12, 19);
-  context.fillStyle = "#211c16"; context.fillText(label, x + 6, Math.max(16, y - 7)); context.restore();
+  const labelX = Math.max(3, Math.min(x, context.canvas.width / context.getTransform().a - textWidth - 12));
+  let labelY = Math.max(3, y - 19);
+  const collides = () => occupied.some(other => labelX < other.x + other.width && labelX + textWidth + 10 > other.x && labelY < other.y + other.height && labelY + 16 > other.y);
+  let attempts = 0;
+  while (collides() && attempts < 4) { labelY = Math.max(3, labelY - 18); attempts++; }
+  if (collides()) { context.restore(); return; }
+  occupied.push({ x: labelX, y: labelY, width: textWidth + 12, height: 18 });
+  context.setLineDash([]); context.fillStyle = color; context.fillRect(labelX, labelY, textWidth + 10, 16);
+  context.fillStyle = color === palette.red ? palette.onDark : palette.ink;
+  context.fillText(label, labelX + 5, labelY + 11); context.restore();
 }
 
 function carsAtTime(result: RunResult, time: number) {
@@ -461,17 +537,17 @@ function boxIoU(a: CarObservation, b: CarObservation) {
   return intersection / Math.max(1e-8, a.width * a.height + b.width * b.height - intersection);
 }
 
-function drawGateLines(context: CanvasRenderingContext2D, points: GatePoint[], position: (x: number, y: number) => readonly [number, number]) {
+function drawGateLines(context: CanvasRenderingContext2D, points: GatePoint[], position: (x: number, y: number) => readonly [number, number], palette: OverlayPalette) {
   for (let gate = 0; gate < Math.floor(points.length / 2); gate++) {
     const first = points[gate * 2], second = points[gate * 2 + 1];
     const a = position(first[0], first[1]), b = position(second[0], second[1]);
-    context.save(); context.strokeStyle = gate === 0 ? "#f0bf43" : "#e55b43"; context.lineWidth = 3; context.setLineDash([8, 5]);
+    context.save(); context.strokeStyle = gate === 0 ? palette.yellow : palette.red; context.lineWidth = 2; context.setLineDash([8, 5]);
     context.beginPath(); context.moveTo(a[0], a[1]); context.lineTo(b[0], b[1]); context.stroke();
-    context.setLineDash([]); context.beginPath(); context.arc(a[0], a[1], 4, 0, Math.PI * 2); context.arc(b[0], b[1], 4, 0, Math.PI * 2); context.fillStyle = gate === 0 ? "#f0bf43" : "#e55b43"; context.fill();
-    context.font = "600 10px 'SFMono-Regular', Consolas, monospace"; context.fillText(gate === 0 ? "GATE A" : "GATE B", a[0] + 7, a[1] - 7); context.restore();
+    context.setLineDash([]); context.beginPath(); context.arc(a[0], a[1], 4, 0, Math.PI * 2); context.arc(b[0], b[1], 4, 0, Math.PI * 2); context.fillStyle = gate === 0 ? palette.yellow : palette.red; context.fill();
+    context.font = `400 10px ${palette.mono}`; context.fillText(gate === 0 ? "GATE A" : "GATE B", a[0] + 7, a[1] - 7); context.restore();
   }
   if (points.length % 2 === 1) {
-    const a = position(points.at(-1)![0], points.at(-1)![1]); context.beginPath(); context.arc(a[0], a[1], 5, 0, Math.PI * 2); context.fillStyle = "#e55b43"; context.fill();
+    const a = position(points.at(-1)![0], points.at(-1)![1]); context.beginPath(); context.arc(a[0], a[1], 5, 0, Math.PI * 2); context.fillStyle = palette.red; context.fill();
   }
 }
 
@@ -515,3 +591,5 @@ function crossingTime(p: GatePoint, q: GatePoint, a: GatePoint, b: GatePoint, ti
 function clamp(value: number) { return Math.max(0, Math.min(1, value)); }
 function lerp(from: number, to: number, amount: number) { return from + (to - from) * amount; }
 function formatTime(seconds: number) { const safe = Math.max(0, Math.floor(seconds || 0)); return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`; }
+
+function formatPreciseTime(seconds: number) { const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0); return `${formatTime(safe)}.${String(Math.floor(safe * 100) % 100).padStart(2, "0")}`; }
