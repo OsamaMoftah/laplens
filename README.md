@@ -53,6 +53,7 @@ Open http://localhost:3210.
 
 ```sh
 pnpm lint
+pnpm test
 pnpm typecheck
 pnpm build:space
 pnpm preview:space

@@ -9,7 +9,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "build:space": "node scripts/prepare-space.mjs --clean && LAPLENS_STATIC_EXPORT=1 pnpm build && node scripts/prepare-space.mjs",
-    "preview:space": "serve out -l tcp://127.0.0.1:3210 --no-clipboard --no-port-switching"
+    "preview:space": "serve out -l tcp://127.0.0.1:3210 --no-clipboard --no-port-switching",
+    "test": "node --test scripts/*.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/karla": "^5.3.0",
